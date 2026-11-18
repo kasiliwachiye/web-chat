@@ -39,8 +39,13 @@ async function main() {
   const eve = await login('eve');
 
   const convs = (await (await get('/conversations', alice.cookie)).json()).conversations;
-  check(convs.length === 2, `alice sees 2 conversations (got ${convs.length})`);
-  const group = convs.find((c: any) => c.type === 'GROUP');
+  // Assert on the seeded conversations by identity, not on totals, so the script can be re-run
+  // after manual testing or previous smoke runs without reseeding.
+  const group = convs.find((c: any) => c.type === 'GROUP' && c.name === 'Project Phoenix');
+  const dm = convs.find(
+    (c: any) => c.type === 'DIRECT' && c.members.some((m: any) => m.id === bob.user.id),
+  );
+  check(group && dm, `alice sees the seeded group and DM (${convs.length} conversations total)`);
   check(group?.lastMessage, 'group has last message');
 
   const dm1 = await fetch(`${API}/conversations/direct`, {
@@ -48,16 +53,33 @@ async function main() {
     headers: { cookie: alice.cookie, 'content-type': 'application/json' },
     body: JSON.stringify({ userId: bob.user.id }),
   }).then((r) => r.json());
-  const dm = convs.find((c: any) => c.type === 'DIRECT');
   check(dm1.conversation.id === dm.id, 'POST /conversations/direct is idempotent');
 
   const forbidden = await get(`/conversations/${group.id}/messages`, eve.cookie);
   check(forbidden.status === 403, `non-member history -> 403 (got ${forbidden.status})`);
 
+  // Paging: walking back with limit=4 must reproduce the full history exactly (no gaps, no dupes,
+  // ascending), whatever the current message count is.
+  const full = await (await get(`/conversations/${group.id}/messages?limit=100`, alice.cookie)).json();
   const hist = await (await get(`/conversations/${group.id}/messages?limit=4`, alice.cookie)).json();
-  check(hist.messages.length === 4 && hist.nextCursor, 'history page of 4 with cursor');
-  const older = await (await get(`/conversations/${group.id}/messages?limit=4&cursor=${hist.nextCursor}`, alice.cookie)).json();
-  check(older.messages.length === 2 && older.nextCursor === null, 'older page has remaining 2');
+  check(
+    hist.messages.length === Math.min(4, full.messages.length) && (full.messages.length > 4) === !!hist.nextCursor,
+    `first history page of ${hist.messages.length}, cursor ${hist.nextCursor ? 'set' : 'null'}`,
+  );
+  let walked = [...hist.messages];
+  let cursor = hist.nextCursor;
+  let pages = 1;
+  while (cursor && pages < 50) {
+    const page = await (await get(`/conversations/${group.id}/messages?limit=4&cursor=${cursor}`, alice.cookie)).json();
+    walked = [...page.messages, ...walked];
+    cursor = page.nextCursor;
+    pages++;
+  }
+  const ids = (ms: any[]) => ms.map((m) => m.id).join(',');
+  check(
+    ids(walked) === ids(full.messages),
+    `cursor paging over ${pages} pages returns all ${full.messages.length} messages in order`,
+  );
 
   const sa = await connect(alice.cookie);
   const sb = await connect(bob.cookie);
