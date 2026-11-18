@@ -136,7 +136,7 @@ sequenceDiagram
   API-->>C: 200 {user} + Set-Cookie token=JWT (httpOnly, SameSite=Lax, Secure in prod, 8h)
   C->>API: GET /auth/me (cookie)
   API-->>C: {user, token}
-  C->>WS: connect (cookie sent; also auth.token)
+  C->>WS: connect (cookie sent, plus auth.token)
   WS->>WS: verify JWT in io.use() middleware
   WS-->>C: connected, rooms joined, presence online
 ```
